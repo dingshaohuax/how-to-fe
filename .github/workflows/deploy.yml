@@ -1,0 +1,76 @@
+name: Deploy Slidev to GitHub Pages
+
+# 推送 main 自动运行。也可以在仓库的 Actions 页面手动点击 Run workflow。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一时间只运行一次 Pages 工作流。已经开始的那次会继续执行。
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  # 第一阶段在 GitHub 的 Ubuntu 运行器上构建静态站点。
+  build:
+    runs-on: ubuntu-latest
+    # 构建阶段只需读取源码和 Pages 配置。
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      # 把触发本次运行的提交检出到运行器。
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # 用 Node 24 运行 Slidev，用指定版本的 pnpm 安装依赖。
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: '12.21.0'
+          # 缓存已下载的依赖包，后面的安装步骤可以复用。
+          cache: true
+
+      # 读取 Pages 站点路径。这个项目通常是 /how-to-fe，后面用 id: pages 读取结果。
+      - name: Configure GitHub Pages
+        id: pages
+        uses: actions/configure-pages@v6
+
+      # 严格按 pnpm-lock.yaml 安装。锁文件和 package.json 对不上时会报错。
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # --base 配置静态资源所在的路径，构建命令统一在末尾补一个斜杠。
+      # hash 路由支持直接打开或刷新某一页，--without-notes 从线上产物里移除演讲者备注。
+      - name: Build slides
+        env:
+          PAGES_BASE_PATH: ${{ steps.pages.outputs.base_path }}
+        run: pnpm run build --base "${PAGES_BASE_PATH%/}/" --router-mode hash --without-notes
+
+      # 把构建生成的 dist 打包，交给 deploy 阶段发布。
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist
+
+  # 第二阶段把上一步的产物发布到 GitHub Pages。
+  deploy:
+    # 构建成功后才会开始部署。
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      # 发布 Pages 需要写权限和 GitHub 签发的部署身份凭证。
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      # 将部署返回的网址显示在 Actions 的运行详情里。
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
